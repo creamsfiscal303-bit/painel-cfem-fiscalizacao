@@ -13,8 +13,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-import certifi
+##import certifi
 import streamlit as st
+import truststore
+
+# Utiliza o repositório de certificados confiáveis do sistema operacional.
+truststore.inject_into_ssl()
 
 try:
     import shapefile  # pyshp: lê shapefile sem depender de geopandas
@@ -58,13 +62,12 @@ def download_source() -> str:
     # O arquivo temporário evita reutilizar um CSV parcial caso a conexão seja interrompida.
     part_path = path.with_suffix(path.suffix + ".part")
     try:
-        with requests.get(
+           with requests.get(
             SOURCE_URL,
             stream=True,
             timeout=(30, 180),
-            verify=certifi.where(),
             headers={"User-Agent": "Mozilla/5.0 (compatible; Painel-CFEM-CREA/1.0)"},
-        ) as response:
+    ) as response:
             response.raise_for_status()
             with open(part_path, "wb") as f:
                 for block in response.iter_content(chunk_size=1024 * 1024):
