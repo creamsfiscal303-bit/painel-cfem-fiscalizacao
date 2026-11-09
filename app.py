@@ -8,16 +8,13 @@ import time
 import zipfile
 import unicodedata
 from pathlib import Path
-
-import truststore
-truststore.inject_into_ssl()
+from urllib.parse import urlparse
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-
 
 try:
     import shapefile  # pyshp: lê shapefile sem depender de geopandas
@@ -50,49 +47,44 @@ st.info(
     "as informações antes de qualquer ação fiscalizatória."
 )
 
+HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Painel-CFEM-CREA/1.0)"}
+
+
+def anm_get(url, **kwargs):
+    """GET para os servidores da ANM.
+
+    O servidor de dados abertos da ANM às vezes envia a cadeia de certificados incompleta, e o Python
+    recusa a conexão (CERTIFICATE_VERIFY_FAILED), embora o navegador aceite. Nesse caso, e somente para
+    domínios anm.gov.br (dados públicos), tenta de novo sem validar o certificado.
+    """
+    kwargs.setdefault("headers", HTTP_HEADERS)
+    try:
+        return requests.get(url, **kwargs)
+    except requests.exceptions.SSLError:
+        if not (urlparse(url).hostname or "").endswith("anm.gov.br"):
+            raise
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return requests.get(url, verify=False, **kwargs)
+
+
 @st.cache_data(show_spinner=False, ttl=6 * 60 * 60)
 def download_source() -> str:
-    """Baixa o CSV oficial da ANM com proteção SSL."""
+    """Baixa o CSV oficial para um arquivo temporário persistente durante a sessão/cache."""
     path = Path(tempfile.gettempdir()) / "CFEM_Arrecadacao_2022_2026.csv"
-
     if path.exists() and path.stat().st_size > 1_000_000:
         return str(path)
 
-    part_path = path.with_suffix(path.suffix + ".part")
-
-    try:
-        with requests.get(
-            SOURCE_URL,
-            stream=True,
-            timeout=(30, 180),
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; Painel-CFEM-CREA/1.0)"
-            },
-        ) as response:
-
-            response.raise_for_status()
-
-            with open(part_path, "wb") as f:
-                for block in response.iter_content(
-                    chunk_size=1024 * 1024
-                ):
-                    if block:
-                        f.write(block)
-
-        if not part_path.exists() or part_path.stat().st_size < 1_000_000:
-            raise RuntimeError(
-                "O arquivo baixado parece incompleto. "
-                "Verifique a fonte oficial da ANM."
-            )
-
-        part_path.replace(path)
-
-    except Exception:
-        if part_path.exists():
-            part_path.unlink()
-        raise
-
+    with anm_get(SOURCE_URL, stream=True, timeout=(30, 180)) as response:
+        response.raise_for_status()
+        with open(path, "wb") as f:
+            for block in response.iter_content(chunk_size=1024 * 1024):
+                if block:
+                    f.write(block)
+    if path.stat().st_size < 1_000_000:
+        raise RuntimeError("O arquivo baixado parece incompleto. Verifique a fonte oficial da ANM.")
     return str(path)
+
 def normalize_columns(columns):
     return [str(c).replace("\ufeff", "").strip().strip('"') for c in columns]
 
@@ -525,7 +517,7 @@ def download_sigmine_zip(state: str) -> str:
         url = template.format(uf=state.upper())
         part = path.with_suffix(".part")
         try:
-            with requests.get(url, stream=True, timeout=(30, 180)) as resp:
+            with anm_get(url, stream=True, timeout=(30, 180)) as resp:
                 resp.raise_for_status()
                 with open(part, "wb") as f:
                     for block in resp.iter_content(chunk_size=1024 * 1024):
@@ -1575,6 +1567,7 @@ with tab_method:
 - **Consolidação:** registros são agrupados por identificador disponível e/ou processo; processos diferentes podem pertencer ao mesmo titular.
 - **Limitações:** CPF pode estar mascarado; o valor recolhido não é faturamento nem medida direta de produção; registros históricos não comprovam atividade atual.
 - **Uso fiscalizatório:** os resultados são indícios para planejamento e seleção de alvos de verificação, não conclusões automáticas de infração.
+- **Conexão com a ANM:** se o servidor da ANM apresentar falha na cadeia de certificados, o painel repete o download sem validar o certificado, apenas para domínios anm.gov.br (dados públicos).
 - **Localização dos processos:** polígonos dos processos minerários ativos do SIGMINE (ANM), ligados à CFEM pelo número do processo; processos inativos não possuem polígono nessa base.
 - **Validação recomendada:** consultar o cadastro da ANM, a situação cadastral do CNPJ, o registro empresarial no CREA competente, as ARTs e a atividade efetivamente executada.
 """)
