@@ -9,13 +9,14 @@ import zipfile
 import unicodedata
 from pathlib import Path
 
+import truststore
+truststore.inject_into_ssl()
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-##import certifi
 import streamlit as st
-import truststore
 
 # Utiliza o repositório de certificados confiáveis do sistema operacional.
 truststore.inject_into_ssl()
@@ -53,39 +54,47 @@ st.info(
 
 @st.cache_data(show_spinner=False, ttl=6 * 60 * 60)
 def download_source() -> str:
-    """Baixa o CSV oficial para um arquivo temporário persistente durante a sessão/cache."""
+    """Baixa o CSV oficial da ANM com proteção SSL."""
     path = Path(tempfile.gettempdir()) / "CFEM_Arrecadacao_2022_2026.csv"
+
     if path.exists() and path.stat().st_size > 1_000_000:
         return str(path)
 
-    # Baixa usando o pacote atualizado de certificados raiz confiáveis.
-    # O arquivo temporário evita reutilizar um CSV parcial caso a conexão seja interrompida.
     part_path = path.with_suffix(path.suffix + ".part")
+
     try:
-           with requests.get(
+        with requests.get(
             SOURCE_URL,
             stream=True,
             timeout=(30, 180),
-            headers={"User-Agent": "Mozilla/5.0 (compatible; Painel-CFEM-CREA/1.0)"},
-    ) as response:
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Painel-CFEM-CREA/1.0)"
+            },
+        ) as response:
+
             response.raise_for_status()
+
             with open(part_path, "wb") as f:
-                for block in response.iter_content(chunk_size=1024 * 1024):
+                for block in response.iter_content(
+                    chunk_size=1024 * 1024
+                ):
                     if block:
                         f.write(block)
 
         if not part_path.exists() or part_path.stat().st_size < 1_000_000:
-            raise RuntimeError("O arquivo baixado parece incompleto. Verifique a fonte oficial da ANM.")
+            raise RuntimeError(
+                "O arquivo baixado parece incompleto. "
+                "Verifique a fonte oficial da ANM."
+            )
 
         part_path.replace(path)
+
     except Exception:
-        # Remove download incompleto; a próxima execução tentará baixar novamente.
         if part_path.exists():
             part_path.unlink()
         raise
 
     return str(path)
-
 def normalize_columns(columns):
     return [str(c).replace("\ufeff", "").strip().strip('"') for c in columns]
 
